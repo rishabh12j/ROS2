@@ -6,6 +6,9 @@ from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint, MotionPlanRequest, JointConstraint
 from shape_msgs.msg import SolidPrimitive
 from geometry_msgs.msg import PoseStamped, Quaternion
+import math
+from tf_transformations import quaternion_from_euler
+import argparse
 
 
 class MoveItEEClient(Node):
@@ -55,14 +58,20 @@ class MoveItEEClient(Node):
         send_future = self._client.send_goal_async(goal)
         send_future.add_done_callback(self._goal_respose_cb)
 
-    def send_pose(self, x, y, z, w=1.0):
+    def send_pose(self, x, y, z, roll=0.0, pitch=0.0):
         self.motion_done = False
         pose = PoseStamped()
         pose.header.frame_id = self.base_link
         pose.pose.position.x = x
         pose.pose.position.y = y
         pose.pose.position.z = z
-        pose.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=w)
+        
+        # Calculate yaw
+        yaw = math.atan2(y, x)
+        
+        # Convert to quaternion using tf_transformations
+        q = quaternion_from_euler(roll, pitch, yaw)
+        pose.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
         req = MotionPlanRequest()
         req.group_name = self.group_name
@@ -74,7 +83,7 @@ class MoveItEEClient(Node):
         pc.link_name = self.ee_link
         sp = SolidPrimitive()
         sp.type = SolidPrimitive.SPHERE
-        sp.dimensions = [0.01]
+        sp.dimensions = [0.05]
         pc.constraint_region.primitives = [sp]
         pc.constraint_region.primitive_poses = [pose.pose]
 
@@ -127,52 +136,68 @@ def main1():
     rclpy.spin(node)
     rclpy.shutdown()
 
+
 def main():
     rclpy.init()
+
+    parser = argparse.ArgumentParser(description='Pick and Place parameters')
+    parser.add_argument('--pick_x', type=float, default=0.2, help='Pick X coordinate')
+    parser.add_argument('--pick_y', type=float, default=0.10, help='Pick Y coordinate')
+    parser.add_argument('--place_x', type=float, default=0.4, help='Place X coordinate')
+    parser.add_argument('--place_y', type=float, default=0.20, help='Place Y coordinate')
+    parser.add_argument('--z_hover', type=float, default=0.20, help='Z hover height')
+    parser.add_argument('--z_pick', type=float, default=0.05, help='Z pick height')
+
+    args = parser.parse_args()
+
     node = MoveItEEClient(control_group='arm')
     node_g = MoveItEEClient(control_group='gripper')
     rclpy.spin_once(node, timeout_sec=0.1)
 
-    x_o, y_o = 0.2, 0.0
-    x_t, y_t = 0.4, 0.0
-    z_hover = 0.15
-    z_pick = 0.1
+    x_o, y_o = args.pick_x, args.pick_y
+    x_t, y_t = args.place_x, args.place_y
+    z_hover = args.z_hover
+    z_pick = args.z_pick
 
     waypoints = [
-    (x_o, y_o, z_hover, 'open'),    # Hover before pick - open gripper
-    (x_o, y_o, z_pick, 'close'),    # Pick coordinate - close gripper
-    (x_o, y_o, z_hover, None),      # Hover after pick - keep gripper closed
-    (x_t, y_t, z_hover, None),      # Hover before place - keep gripper closed
-    (x_t, y_t, z_pick, 'open'),     # Place coordinate - open gripper
-    (x_t, y_t, z_hover, 'close'),   # Hover after place - close gripper again
-]
+        (x_o, y_o, z_hover, 'open'),    # Hover before pick - open gripper
+        (x_o, y_o, z_pick, 'close'),    # Pick coordinate - close gripper
+        (x_o, y_o, z_hover, None),      # Hover after pick - keep gripper closed
+        (x_t, y_t, z_hover, None),      # Hover before place - keep gripper closed
+        (x_t, y_t, z_pick, 'open'),     # Place coordinate - open gripper
+        (x_t, y_t, z_hover, 'close'),   # Hover after place - close gripper again
+    ]
 
     for x, y, z, gripper_action in waypoints:
         node.get_logger().info(f"Moving to {x},{y},{z}")
 
-        # Wait for previous motion to complete before sending next command
+        # Wait for previous motion to complete
         while not node.motion_done:
             rclpy.spin_once(node, timeout_sec=0.1)
 
+        # Send pose to arm
         node.send_pose(x, y, z)
 
-        # Wait for current motion to complete
+        # Wait for arm motion to complete
         while not node.motion_done:
             rclpy.spin_once(node, timeout_sec=0.1)
 
+        # Gripper movement if instructed
         if gripper_action == 'open':
             node_g.get_logger().info("Opening gripper")
             node_g.send_gr_pose(open=True)
-            while not node.motion_done:
+            while not node_g.motion_done:
                 rclpy.spin_once(node_g, timeout_sec=0.1)
         elif gripper_action == 'close':
             node_g.get_logger().info("Closing gripper")
             node_g.send_gr_pose(open=False)
-            while not node.motion_done:
+            while not node_g.motion_done:
                 rclpy.spin_once(node_g, timeout_sec=0.1)
 
     rclpy.shutdown()
 
-
 if __name__ == '__main__':
     main()   # Change to main1() to run gripper control
+
+
+#ros2 run rx200_moveit_control rx200_moveit_client --ros-args -p pick_x:=0.3 -p pick_y:=0.1 -p place_x:=0.5 -p place_y:=0.2 -p z_pick:=0.15 -p z_hover:=0.2
