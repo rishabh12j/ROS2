@@ -6,16 +6,16 @@ from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint, MotionPlanRequest, JointConstraint
 from shape_msgs.msg import SolidPrimitive
 from geometry_msgs.msg import PoseStamped, Quaternion
-from std_msgs.msg import Bool
-import time
 
 
 class MoveItEEClient(Node):
     def __init__(self, control_group='arm'):
         super().__init__('rx200_moveit_control')
+        self.motion_done = True
         self._client = ActionClient(self, MoveGroup, '/move_action')
         while not self._client.wait_for_server(1.0):
             self.get_logger().warning('Waiting for MoveGroup action server...')
+        
         # Set control group based on argument
         if control_group == 'gripper':
             self.group_name = 'interbotix_gripper'
@@ -25,11 +25,11 @@ class MoveItEEClient(Node):
         self.ee_link = 'rx200/ee_gripper_link'
         self.base_link = 'rx200/base_link'
         self.gripper_joint = 'left_finger'
-
-        self.sub=self.create_subscription(Bool,'temp',self.temp,10)
+        
         self.get_logger().info(f'Node initialized for control group: {self.group_name}!')
 
     def send_gr_pose(self, open=True):
+        self.motion_done = False
         req = MotionPlanRequest()
         req.group_name = self.group_name
         req.allowed_planning_time = 2.0
@@ -56,6 +56,7 @@ class MoveItEEClient(Node):
         send_future.add_done_callback(self._goal_respose_cb)
 
     def send_pose(self, x, y, z, w=1.0):
+        self.motion_done = False
         pose = PoseStamped()
         pose.header.frame_id = self.base_link
         pose.pose.position.x = x
@@ -94,9 +95,9 @@ class MoveItEEClient(Node):
         goal = MoveGroup.Goal()
         goal.request = req
         goal.planning_options.plan_only = False
-        goal.planning_options.replan = True
+        goal.planning_options.replan = False
         goal.planning_options.look_around = False
-
+        
         send_future = self._client.send_goal_async(goal, feedback_callback=self._feedback_cb)
         send_future.add_done_callback(self._goal_respose_cb)
 
@@ -116,18 +117,9 @@ class MoveItEEClient(Node):
         result = future.result().result
         code = getattr(result.error_code, 'val', )
         self.get_logger().info(f"[Result] error_code {code}")
+        self.motion_done = True
 
-    def temp(self, cb):
-        x_h, y_h = 0.25, 0.0
-        x_t, y_t = 0.45, 0.0
-        z_hover = 0.25
-        z_pick = 0.15
-        self.send_pose(x_h, y_h, z_pick)
-        
-
-
-
-def main():
+def main1():
     rclpy.init()
     node = MoveItEEClient(control_group='gripper')
     # Example to open the gripper
@@ -135,29 +127,51 @@ def main():
     rclpy.spin(node)
     rclpy.shutdown()
 
-def main1():
+def main():
     rclpy.init()
     node = MoveItEEClient(control_group='arm')
-    x_h, y_h = 0.25, 0.0
-    x_t, y_t = 0.45, 0.0
-    z_hover = 0.25
-    z_pick = 0.15
+    rclpy.spin_once(node, timeout_sec=0.1)
+
+    x_o, y_o = 0.2, 0.0
+    x_t, y_t = 0.4, 0.0
+    z_hover = 0.15
+    z_pick = 0.1
+
     waypoints = [
-        (x_h, y_h, z_hover),
-        (x_h, y_h, z_pick),
-        (x_h, y_h, z_hover),
-        (x_t, y_t, z_hover),
-        (x_t, y_t, z_pick),
-        (x_t, y_t, z_hover)
+        (x_o, y_o, z_hover, None),
+        (x_o, y_o, z_pick, 'close'),
+        (x_o, y_o, z_hover, None),
+        (x_t, y_t, z_hover, None),
+        (x_t, y_t, z_pick, 'open'),
+        (x_t, y_t, z_hover, None),
     ]
-    for x, y, z in waypoints:
-        node.get_logger().info(f"{x},{y},{z}")
+
+    for x, y, z, gripper_action in waypoints:
+        node.get_logger().info(f"Moving to {x},{y},{z}")
+
+        # Wait for previous motion to complete before sending next command
+        while not node.motion_done:
+            rclpy.spin_once(node, timeout_sec=0.1)
+
         node.send_pose(x, y, z)
-        rclpy.spin_once(node)
-        time.sleep(3.0)
-    
+
+        # Wait for current motion to complete
+        while not node.motion_done:
+            rclpy.spin_once(node, timeout_sec=0.1)
+
+        if gripper_action == 'open':
+            node.get_logger().info("Opening gripper")
+            node.send_gr_pose(open=True)
+            while not node.motion_done:
+                rclpy.spin_once(node, timeout_sec=0.1)
+        elif gripper_action == 'close':
+            node.get_logger().info("Closing gripper")
+            node.send_gr_pose(open=False)
+            while not node.motion_done:
+                rclpy.spin_once(node, timeout_sec=0.1)
+
     rclpy.shutdown()
 
 
 if __name__ == '__main__':
-    main1()   # Change to main1() to run gripper control
+    main()   # Change to main1() to run gripper control
