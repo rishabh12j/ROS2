@@ -130,6 +130,7 @@ def main1():
 def main():
     rclpy.init()
     node = MoveItEEClient(control_group='arm')
+    node_g = MoveItEEClient(control_group='gripper')
     rclpy.spin_once(node, timeout_sec=0.1)
 
     x_o, y_o = 0.2, 0.0
@@ -138,13 +139,13 @@ def main():
     z_pick = 0.1
 
     waypoints = [
-        (x_o, y_o, z_hover, None),
-        (x_o, y_o, z_pick, 'close'),
-        (x_o, y_o, z_hover, None),
-        (x_t, y_t, z_hover, None),
-        (x_t, y_t, z_pick, 'open'),
-        (x_t, y_t, z_hover, None),
-    ]
+    (x_o, y_o, z_hover, 'open'),    # Hover before pick - open gripper
+    (x_o, y_o, z_pick, 'close'),    # Pick coordinate - close gripper
+    (x_o, y_o, z_hover, None),      # Hover after pick - keep gripper closed
+    (x_t, y_t, z_hover, None),      # Hover before place - keep gripper closed
+    (x_t, y_t, z_pick, 'open'),     # Place coordinate - open gripper
+    (x_t, y_t, z_hover, 'close'),   # Hover after place - close gripper again
+]
 
     for x, y, z, gripper_action in waypoints:
         node.get_logger().info(f"Moving to {x},{y},{z}")
@@ -160,15 +161,15 @@ def main():
             rclpy.spin_once(node, timeout_sec=0.1)
 
         if gripper_action == 'open':
-            node.get_logger().info("Opening gripper")
-            node.send_gr_pose(open=True)
+            node_g.get_logger().info("Opening gripper")
+            node_g.send_gr_pose(open=True)
             while not node.motion_done:
-                rclpy.spin_once(node, timeout_sec=0.1)
+                rclpy.spin_once(node_g, timeout_sec=0.1)
         elif gripper_action == 'close':
-            node.get_logger().info("Closing gripper")
-            node.send_gr_pose(open=False)
+            node_g.get_logger().info("Closing gripper")
+            node_g.send_gr_pose(open=False)
             while not node.motion_done:
-                rclpy.spin_once(node, timeout_sec=0.1)
+                rclpy.spin_once(node_g, timeout_sec=0.1)
 
     rclpy.shutdown()
 
